@@ -45,12 +45,11 @@ def after_install():
 		# only set home_page if the value doesn't exist in the db
 		if not frappe.db.get_default("desktop:home_page"):
 			frappe.db.set_default("desktop:home_page", "setup-wizard")
-			frappe.db.set_single_value("System Settings", "setup_complete", 0)
 
 	# clear test log
-	from frappe.tests.utils.generators import _after_install_clear_test_log
+	from frappe.tests.utils.generators import _clear_test_log
 
-	_after_install_clear_test_log()
+	_clear_test_log()
 
 	add_standard_navbar_items()
 
@@ -90,8 +89,6 @@ def install_basic_docs():
 			"thread_notify": 0,
 			"send_me_a_copy": 0,
 		},
-		{"doctype": "Role", "role_name": "Report Manager"},
-		{"doctype": "Role", "role_name": "Translator"},
 		{
 			"doctype": "Workflow State",
 			"workflow_state_name": "Pending",
@@ -113,27 +110,6 @@ def install_basic_docs():
 		{"doctype": "Workflow Action Master", "workflow_action_name": "Approve"},
 		{"doctype": "Workflow Action Master", "workflow_action_name": "Reject"},
 		{"doctype": "Workflow Action Master", "workflow_action_name": "Review"},
-		{
-			"doctype": "Email Domain",
-			"domain_name": "example.com",
-			"email_id": "account@example.com",
-			"password": "pass",
-			"email_server": "imap.example.com",
-			"use_imap": 1,
-			"smtp_server": "smtp.example.com",
-		},
-		{
-			"doctype": "Email Account",
-			"domain": "example.com",
-			"email_id": "notifications@example.com",
-			"default_outgoing": 1,
-		},
-		{
-			"doctype": "Email Account",
-			"domain": "example.com",
-			"email_id": "replies@example.com",
-			"default_incoming": 1,
-		},
 	]
 
 	for d in install_docs:
@@ -158,7 +134,7 @@ def before_tests():
 	frappe.clear_cache()
 
 	# complete setup if missing
-	if not cint(frappe.db.get_single_value("System Settings", "setup_complete")):
+	if not frappe.is_setup_complete():
 		complete_setup_wizard()
 
 	frappe.db.set_single_value("Website Settings", "disable_signup", 0)
@@ -200,3 +176,41 @@ def add_standard_navbar_items():
 		navbar_settings.append("help_dropdown", item)
 
 	navbar_settings.save()
+
+
+def auto_generate_icons_and_sidebar(app_name=None):
+	"""Auto Create desktop icons and workspace sidebars."""
+	from frappe.desk.doctype.desktop_icon.desktop_icon import create_desktop_icons
+	from frappe.desk.doctype.workspace_sidebar.workspace_sidebar import (
+		create_workspace_sidebar_for_workspaces,
+	)
+
+	try:
+		print("Creating Desktop Icons")
+		create_desktop_icons()
+		print("Creating Workspace Sidebars")
+		create_workspace_sidebar_for_workspaces()
+		# Save the generated icons
+		frappe.db.commit()  # nosemgrep
+		# Save the genreated sidebar links
+		frappe.db.commit()  # nosemgrep
+	except Exception as e:
+		print(f"Error creating icons {e}")
+
+
+def delete_desktop_icon(app_name):
+	frappe.get_hooks(app_name=app_name)
+	app_title = frappe.get_hooks(app_name=app_name)["app_title"][0]
+	icons_to_be_deleted = frappe.get_all(
+		"Desktop Icon",
+		pluck="name",
+		or_filters=[
+			["Desktop Icon", "name", "=", app_title],
+			["Desktop Icon", "parent_icon", "=", app_title],
+		],
+	)
+	print("Deleting Desktop Icons")
+	for icon in icons_to_be_deleted:
+		frappe.delete_doc_if_exists("Desktop Icon", icon)
+	# Delete icons
+	frappe.db.commit()  # nosemgrep

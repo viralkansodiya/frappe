@@ -27,10 +27,7 @@ frappe.dom = {
 	},
 	eval: function (txt) {
 		if (!txt) return;
-		var el = document.createElement("script");
-		el.appendChild(document.createTextNode(txt));
-		// execute the script globally
-		document.getElementsByTagName("head")[0].appendChild(el);
+		new Function(txt)();
 	},
 
 	remove_script_and_style: function (txt) {
@@ -355,7 +352,7 @@ frappe.get_modal = function (title, content) {
 							${frappe.utils.icon("collapse")}
 						</button>
 						<button class="btn btn-modal-close btn-link" data-dismiss="modal">
-							${frappe.utils.icon("close-alt", "sm", "close-alt")}
+							${frappe.utils.icon("close", "sm")}
 						</button>
 					</div>
 				</div>

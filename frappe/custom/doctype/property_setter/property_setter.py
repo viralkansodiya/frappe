@@ -41,6 +41,7 @@ class PropertySetter(Document):
 
 		if self.is_new():
 			delete_property_setter(self.doc_type, self.property, self.field_name, self.row_name)
+
 		frappe.clear_cache(doctype=self.doc_type)
 
 	def on_trash(self):
@@ -78,6 +79,7 @@ def make_property_setter(
 	property_type,
 	for_doctype=False,
 	validate_fields_for_doctype=True,
+	is_system_generated=True,
 ):
 	# WARNING: Ignores Permissions
 	property_setter = frappe.get_doc(
@@ -89,6 +91,7 @@ def make_property_setter(
 			"property": property,
 			"value": value,
 			"property_type": property_type,
+			"is_system_generated": is_system_generated,
 		}
 	)
 	property_setter.flags.ignore_permissions = True

@@ -71,7 +71,9 @@ frappe.ui.form.on("Auto Repeat", {
 			frappe.model.with_doc("Email Template", frm.doc.template, () => {
 				let email_template = frappe.get_doc("Email Template", frm.doc.template);
 				frm.set_value("subject", email_template.subject);
-				frm.set_value("message", email_template.response);
+				let message_value = email_template.response;
+				if (email_template.use_html) message_value = email_template.response_html;
+				frm.set_value("message", message_value);
 				frm.refresh_field("subject");
 				frm.refresh_field("message");
 			});
@@ -83,14 +85,17 @@ frappe.ui.form.on("Auto Repeat", {
 	},
 
 	preview_message: function (frm) {
+		if (frm.is_dirty()) {
+			frappe.msgprint(__("Please save the form before previewing the message"));
+			return;
+		}
+
 		if (frm.doc.message) {
 			frappe.call({
 				method: "frappe.automation.doctype.auto_repeat.auto_repeat.generate_message_preview",
+				type: "POST",
 				args: {
-					reference_dt: frm.doc.reference_doctype,
-					reference_doc: frm.doc.reference_document,
-					subject: frm.doc.subject,
-					message: frm.doc.message,
+					name: frm.doc.name,
 				},
 				callback: function (r) {
 					if (r.message) {

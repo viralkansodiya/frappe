@@ -1,3 +1,5 @@
+import math
+import uuid
 from datetime import datetime
 from typing import Any
 from urllib.parse import urljoin
@@ -8,6 +10,8 @@ from frappe import _
 from frappe.frappeclient import FrappeClient, FrappeOAuth2Client
 from frappe.utils import convert_utc_to_system_timezone, get_datetime, get_system_timezone
 
+CHUNK_SIZE = 5 * 1024 * 1024  # 5MB
+
 
 class FrappeMail:
 	"""Class to interact with the Frappe Mail API."""
@@ -15,24 +19,22 @@ class FrappeMail:
 	def __init__(
 		self,
 		site: str,
-		mailbox: str,
+		email: str,
 		api_key: str | None = None,
 		api_secret: str | None = None,
 		access_token: str | None = None,
 	) -> None:
 		self.site = site
-		self.mailbox = mailbox
+		self.email = email
 		self.api_key = api_key
 		self.api_secret = api_secret
 		self.access_token = access_token
-		self.client = self.get_client(
-			self.site, self.mailbox, self.api_key, self.api_secret, self.access_token
-		)
+		self.client = self.get_client(self.site, self.email, self.api_key, self.api_secret, self.access_token)
 
 	@staticmethod
 	def get_client(
 		site: str,
-		mailbox: str,
+		email: str,
 		api_key: str | None = None,
 		api_secret: str | None = None,
 		access_token: str | None = None,
@@ -40,7 +42,7 @@ class FrappeMail:
 		"""Returns a FrappeClient or FrappeOAuth2Client instance."""
 
 		if hasattr(frappe.local, "frappe_mail_clients"):
-			if client := frappe.local.frappe_mail_clients.get(mailbox):
+			if client := frappe.local.frappe_mail_clients.get(email):
 				return client
 		else:
 			frappe.local.frappe_mail_clients = {}
@@ -50,7 +52,7 @@ class FrappeMail:
 			if access_token
 			else FrappeClient(url=site, api_key=api_key, api_secret=api_secret)
 		)
-		frappe.local.frappe_mail_clients[mailbox] = client
+		frappe.local.frappe_mail_clients[email] = client
 
 		return client
 
@@ -85,14 +87,15 @@ class FrappeMail:
 			headers=headers,
 			timeout=timeout,
 		)
+		response.raise_for_status()
 
 		return self.client.post_process(response)
 
-	def validate(self, for_outbound: bool = False, for_inbound: bool = False) -> None:
-		"""Validates the mailbox for inbound and outbound emails."""
+	def validate(self) -> None:
+		"""Validates if the user is allowed to send or receive emails."""
 
-		endpoint = "/api/method/mail_client.api.auth.validate"
-		data = {"mailbox": self.mailbox, "for_outbound": for_outbound, "for_inbound": for_inbound}
+		endpoint = "/api/method/mail.api.auth.validate"
+		data = {"email": self.email}
 		self.request("POST", endpoint=endpoint, data=data)
 
 	def send_raw(
@@ -100,23 +103,47 @@ class FrappeMail:
 	) -> None:
 		"""Sends an email using the Frappe Mail API."""
 
-		endpoint = "/api/method/mail_client.api.outbound.send_raw"
-		data = {"from_": sender, "to": recipients, "is_newsletter": is_newsletter}
-		self.request("POST", endpoint=endpoint, data=data, files={"raw_message": message})
+		session_id = str(uuid.uuid4())
+		endpoint = "/api/method/mail.api.outbound.send_raw"
 
-	def pull_raw(self, limit: int = 50, last_synced_at: str | None = None) -> dict[str, str | list[str]]:
-		"""Pulls emails from the mailbox using the Frappe Mail API."""
+		if isinstance(message, str):
+			message = message.encode("utf-8")
 
-		endpoint = "/api/method/mail_client.api.inbound.pull_raw"
-		if last_synced_at:
-			last_synced_at = add_or_update_tzinfo(last_synced_at)
+		total_size = len(message)
+		total_chunks = math.ceil(total_size / CHUNK_SIZE)
 
-		data = {"mailbox": self.mailbox, "limit": limit, "last_synced_at": last_synced_at}
+		for i in range(total_chunks):
+			start = i * CHUNK_SIZE
+			end = start + CHUNK_SIZE
+			chunk = message[start:end]
+
+			files = {"raw_message": ("raw_message.eml", chunk)}
+			data = {
+				"from_": sender,
+				"to": recipients,
+				"is_newsletter": is_newsletter,
+				"uuid": session_id,
+				"chunk_index": i,
+				"total_chunk_count": total_chunks,
+				"chunk_byte_offset": start,
+			}
+			self.request("POST", endpoint=endpoint, data=data, files=files)
+
+	def pull_raw(
+		self, mailbox: str = "inbox", limit: int = 50, last_received_at: str | None = None
+	) -> dict[str, str | list[str]]:
+		"""Pull emails for the account using the Frappe Mail API."""
+
+		endpoint = "/api/method/mail.api.inbound.pull_raw"
+		if last_received_at:
+			last_received_at = add_or_update_tzinfo(last_received_at)
+
+		data = {"mailbox": mailbox, "limit": limit, "last_received_at": last_received_at}
 		headers = {"X-Site": frappe.utils.get_url()}
 		response = self.request("GET", endpoint=endpoint, data=data, headers=headers)
-		last_synced_at = convert_utc_to_system_timezone(get_datetime(response["last_synced_at"]))
+		last_received_at = convert_utc_to_system_timezone(get_datetime(response["last_received_at"]))
 
-		return {"latest_messages": response["mails"], "last_synced_at": last_synced_at}
+		return {"latest_messages": response["mails"], "last_received_at": last_received_at}
 
 
 def add_or_update_tzinfo(date_time: datetime | str, timezone: str | None = None) -> str:

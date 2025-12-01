@@ -26,7 +26,18 @@ frappe.ui.form.Toolbar = class Toolbar {
 				this.page.hide_menu();
 				this.print_icon && this.print_icon.addClass("hide");
 			} else {
-				this.page.show_menu();
+				const is_children_visible =
+					this.page.menu.children().filter(function () {
+						return (
+							$(this).css("display") !== "none" &&
+							!$(this).hasClass("dropdown-divider")
+						);
+					}).length > 0;
+				if (is_children_visible) {
+					this.page.show_menu();
+				} else {
+					this.page.hide_menu();
+				}
 				this.print_icon && this.print_icon.removeClass("hide");
 			}
 		}
@@ -72,6 +83,14 @@ frappe.ui.form.Toolbar = class Toolbar {
 	is_title_editable() {
 		let title_field = this.frm.meta.title_field;
 		let doc_field = this.frm.get_docfield(title_field);
+
+		if (
+			this.frm.meta.naming_rule === "By fieldname" &&
+			this.frm.meta.autoname === "field:" + title_field &&
+			!this.frm.meta.allow_rename
+		) {
+			return false;
+		}
 
 		if (
 			title_field &&
@@ -203,23 +222,33 @@ frappe.ui.form.Toolbar = class Toolbar {
 				});
 			}
 
+			let is_title_field_same_as_autoname = false;
+
 			// check if docname is updatable
 			if (me.can_rename()) {
 				let label = __("New Name");
 				if (me.frm.meta.autoname && me.frm.meta.autoname.startsWith("field:")) {
 					let fieldname = me.frm.meta.autoname.split(":")[1];
 					label = __("New {0}", [__(me.frm.get_docfield(fieldname).label)]);
+					is_title_field_same_as_autoname = fieldname === title_field;
+				}
+
+				if (!is_title_field_same_as_autoname) {
+					fields.push(
+						...[
+							{
+								label: label,
+								fieldname: "name",
+								fieldtype: "Data",
+								reqd: 1,
+								default: docname,
+							},
+						]
+					);
 				}
 
 				fields.push(
 					...[
-						{
-							label: label,
-							fieldname: "name",
-							fieldtype: "Data",
-							reqd: 1,
-							default: docname,
-						},
 						{
 							label: __("Merge with existing"),
 							fieldname: "merge",
@@ -240,6 +269,11 @@ frappe.ui.form.Toolbar = class Toolbar {
 				d.set_primary_action(__("Rename"), (values) => {
 					d.disable_primary_action();
 					d.hide();
+
+					if (is_title_field_same_as_autoname) {
+						values.name = values.title;
+					}
+
 					this.rename_document_title(values.name, values.title, values.merge)
 						.then(() => {
 							d.hide();
@@ -259,7 +293,10 @@ frappe.ui.form.Toolbar = class Toolbar {
 		if (
 			this.frm.save_disabled &&
 			indicator &&
-			[__("Saved"), __("Not Saved")].includes(indicator[0])
+			[
+				__("Saved", null, this.frm.doctype),
+				__("Not Saved", null, this.frm.doctype),
+			].includes(indicator[0])
 		) {
 			return;
 		}
@@ -274,8 +311,30 @@ frappe.ui.form.Toolbar = class Toolbar {
 		this.page.clear_menu();
 
 		if (frappe.boot.desk_settings.form_sidebar) {
-			// this.make_navigation();
+			this.make_navigation();
 			this.make_menu_items();
+		}
+	}
+
+	make_navigation() {
+		// Navigate
+		if (!this.frm.is_new() && !this.frm.meta.issingle) {
+			this.page.add_action_icon(
+				"es-line-left-chevron",
+				() => {
+					this.frm.navigate_records(1);
+				},
+				"prev-doc",
+				__("Previous Document")
+			);
+			this.page.add_action_icon(
+				"es-line-right-chevron",
+				() => {
+					this.frm.navigate_records(0);
+				},
+				"next-doc",
+				__("Next Document")
+			);
 		}
 	}
 
@@ -310,7 +369,7 @@ frappe.ui.form.Toolbar = class Toolbar {
 		) {
 			this.page.add_menu_item(
 				__("Discard"),
-				function () {
+				() => {
 					this.frm._discard();
 				},
 				true
@@ -660,10 +719,15 @@ frappe.ui.form.Toolbar = class Toolbar {
 			if (status !== this.current_status && status === "Amend") {
 				let doc = this.frm.doc;
 				frappe
-					.xcall("frappe.client.is_document_amended", {
-						doctype: doc.doctype,
-						docname: doc.name,
-					})
+					.xcall(
+						"frappe.client.is_document_amended",
+						{
+							doctype: doc.doctype,
+							docname: doc.name,
+						},
+						"GET",
+						{ cache: true }
+					)
 					.then((is_amended) => {
 						if (is_amended) {
 							this.page.clear_actions();

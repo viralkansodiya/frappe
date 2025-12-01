@@ -6,7 +6,9 @@ from json import loads
 
 import frappe
 from frappe import _
+from frappe.boot import get_sidebar_items
 from frappe.desk.desktop import get_workspace_sidebar_items, save_new_widget
+from frappe.desk.doctype.workspace_sidebar.workspace_sidebar import add_to_my_workspace
 from frappe.desk.utils import validate_route_conflict
 from frappe.model.document import Document
 from frappe.model.rename_doc import rename_doc
@@ -89,6 +91,10 @@ class Workspace(Document):
 			if d.link_type == "Report" and d.is_query_report != 1:
 				d.report_ref_doctype = frappe.get_value("Report", d.link_to, "ref_doctype")
 
+		for shortcut in self.get("shortcuts"):
+			if shortcut.type == "Report":
+				shortcut.report_ref_doctype = frappe.get_value("Report", shortcut.link_to, "ref_doctype")
+
 		if not self.app and self.module:
 			from frappe.modules.utils import get_module_app
 
@@ -121,6 +127,14 @@ class Workspace(Document):
 	def on_trash(self):
 		if self.public and not is_workspace_manager():
 			frappe.throw(_("You need to be Workspace Manager to delete a public workspace."))
+		self.delete_from_my_workspaces()
+
+	def delete_from_my_workspaces(self):
+		if not self.public:
+			my_workspaces = frappe.get_doc("Workspace Sidebar", f"My Workspaces-{frappe.session.user}")
+			for w in my_workspaces.items:
+				if self.name == w.link_to:
+					frappe.delete_doc("Workspace Sidebar Item", w.name)
 
 	def after_delete(self):
 		if disable_saving_as_public():
@@ -231,7 +245,7 @@ def disable_saving_as_public():
 		frappe.flags.in_install
 		or frappe.flags.in_uninstall
 		or frappe.flags.in_patch
-		or frappe.flags.in_test
+		or frappe.in_test
 		or frappe.flags.in_fixtures
 		or frappe.flags.in_migrate
 	)
@@ -290,7 +304,10 @@ def new_page(new_page):
 	doc.sequence_id = last_sequence_id(doc) + 1
 	doc.save(ignore_permissions=True)
 
-	return get_workspace_sidebar_items()
+	# add to workspace sidebar items
+	if not doc.public:
+		add_to_my_workspace(doc)
+	return {"workspace_pages": get_workspace_sidebar_items(), "sidebar_items": get_sidebar_items()}
 
 
 @frappe.whitelist()
@@ -298,6 +315,9 @@ def save_page(name, public, new_widgets, blocks):
 	public = frappe.parse_json(public)
 
 	doc = frappe.get_doc("Workspace", name)
+	if not doc.type:
+		doc.type = "Workspace"
+
 	doc.content = blocks
 
 	save_new_widget(doc, name, blocks, new_widgets)

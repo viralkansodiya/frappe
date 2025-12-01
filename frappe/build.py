@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+from contextlib import suppress
 from subprocess import getoutput
 from tempfile import mkdtemp
 from urllib.parse import urlparse
@@ -51,7 +52,7 @@ def build_missing_files():
 		folder = os.path.join(sites_path, "assets", "frappe", "dist", type)
 		current_asset_files.extend(os.listdir(folder))
 
-	development = frappe.local.conf.developer_mode or frappe.local.dev_server
+	development = frappe.local.conf.developer_mode or frappe._dev_server
 	build_mode = "development" if development else "production"
 
 	assets_json = frappe.read_file("assets/assets.json")
@@ -227,6 +228,7 @@ def bundle(
 	files=None,
 	save_metafiles=False,
 	using_cached=False,
+	esbuild_target=None,
 ):
 	"""concat / minify js files"""
 	setup()
@@ -237,6 +239,9 @@ def bundle(
 
 	if apps:
 		command += f" --apps {apps}"
+
+	if esbuild_target:
+		command += f" --esbuild-target {esbuild_target}"
 
 	if skip_frappe:
 		command += " --skip_frappe"
@@ -252,12 +257,12 @@ def bundle(
 	if save_metafiles:
 		command += " --save-metafiles"
 
-	if not apps or apps == "frappe":
-		command += " && cd billing && yarn build"
-
 	check_node_executable()
 	frappe_app_path = frappe.get_app_source_path("frappe")
 	frappe.commands.popen(command, cwd=frappe_app_path, env=get_node_env(), raise_err=True)
+
+	with suppress(Exception):
+		frappe.cache.flushdb()
 
 
 def watch(apps=None):

@@ -36,6 +36,7 @@ frappe.ui.Page = class Page {
 		this.views = {};
 
 		this.make();
+		if (!Object.keys(opts).includes("hide_sidebar")) this.hide_sidebar = false;
 		frappe.ui.pages[frappe.get_route_str()] = this;
 	}
 
@@ -98,7 +99,7 @@ frappe.ui.Page = class Page {
 			this.add_view(
 				"main",
 				`
-				<div class="layout-main">
+				<div class="layout-main layout-two-column">
 					<div class="layout-side-section"></div>
 					<div class="layout-main-section-wrapper">
 						<div class="layout-main-section"></div>
@@ -136,7 +137,7 @@ frappe.ui.Page = class Page {
 
 		this.page_actions = this.wrapper.find(".page-actions");
 		this.filters = this.wrapper.find(".filters");
-
+		this.page_head = this.wrapper.find(".page-head");
 		this.btn_primary = this.page_actions.find(".primary-action");
 		this.btn_secondary = this.page_actions.find(".btn-secondary");
 
@@ -195,6 +196,7 @@ frappe.ui.Page = class Page {
 		let sidebar_wrapper = this.wrapper.find(".layout-side-section");
 		if (this.disable_sidebar_toggle || !sidebar_wrapper.length) {
 			sidebar_toggle.last().remove();
+			this.wrapper.addClass("no-list-sidebar");
 		} else {
 			if (!frappe.is_mobile()) {
 				sidebar_toggle.attr("title", __("Toggle Sidebar"));
@@ -525,11 +527,13 @@ frappe.ui.Page = class Page {
 			$li.addClass("user-action").insertBefore(this.divider);
 		}
 
-		// alt shortcut
-		frappe.ui.keys
-			.get_shortcut_group(parent.get(0))
-			.add($link, $link.find(".menu-item-label"));
-
+		// if an shortcut is already set, dont set an alt Shortcut
+		if (!shortcut) {
+			// alt shortcut
+			frappe.ui.keys
+				.get_shortcut_group(parent.get(0))
+				.add($link, $link.find(".menu-item-label"));
+		}
 		return $link;
 	}
 
@@ -764,7 +768,7 @@ frappe.ui.Page = class Page {
 		}
 		let title_wrapper = this.$title_area.find(".title-text");
 		title_wrapper.html(title);
-		title_wrapper.attr("title", tooltip_label || this.title);
+		title_wrapper.attr("title", __(tooltip_label) || this.title);
 
 		if (tooltip_label) {
 			title_wrapper.tooltip({ delay: { show: 600, hide: 100 }, trigger: "hover" });

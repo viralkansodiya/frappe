@@ -6,13 +6,16 @@ from contextlib import suppress
 import frappe
 from frappe import _
 from frappe.rate_limiter import rate_limit
-from frappe.utils import validate_email_address
+from frappe.utils import escape_html, validate_email_address
 
 sitemap = 1
 
 
 def get_context(context):
 	doc = frappe.get_doc("Contact Us Settings", "Contact Us Settings")
+	if doc.is_disabled:
+		frappe.local.flags.redirect_location = "/404"
+		raise frappe.Redirect
 
 	if doc.query_options:
 		query_options = [opt.strip() for opt in doc.query_options.replace(",", "\n").split("\n") if opt]
@@ -28,7 +31,13 @@ def get_context(context):
 @frappe.whitelist(allow_guest=True)
 @rate_limit(limit=1000, seconds=60 * 60)
 def send_message(sender, message, subject="Website Query"):
+	doc = frappe.get_doc("Contact Us Settings", "Contact Us Settings")
+	if doc.is_disabled:
+		return
+
 	sender = validate_email_address(sender, throw=True)
+
+	message = escape_html(message)
 
 	with suppress(frappe.OutgoingEmailError):
 		if forward_to_email := frappe.db.get_single_value("Contact Us Settings", "forward_to_email"):

@@ -103,13 +103,15 @@ frappe.ui.SortSelector = class SortSelector {
 
 		var { meta_sort_field, meta_sort_order } = this.get_meta_sort_field();
 
-		if (meta_sort_field) {
-			this.args.sort_by = meta_sort_field;
-			this.args.sort_order = meta_sort_order;
-		} else {
-			// default
-			this.args.sort_by = "creation";
-			this.args.sort_order = "desc";
+		if (!this.args.sort_by) {
+			if (meta_sort_field) {
+				this.args.sort_by = meta_sort_field;
+				this.args.sort_order = meta_sort_order;
+			} else {
+				// default
+				this.args.sort_by = "creation";
+				this.args.sort_order = "desc";
+			}
 		}
 
 		if (!this.args.sort_by_label) {
@@ -194,12 +196,12 @@ frappe.ui.SortSelector = class SortSelector {
 		}
 	}
 	get_sql_string() {
-		// build string like: `tabSales Invoice`.subject, `tabSales Invoice`.name desc
+		// build string like: `tabSales Invoice`.`subject`, `tabSales Invoice`.`name` desc
 		const table_name = "`tab" + this.doctype + "`";
-		const sort_by = `${table_name}.${this.sort_by}`;
+		const sort_by = `${table_name}.\`${this.sort_by}\``;
 		if (!["name", "creation", "modified"].includes(this.sort_by)) {
 			// add name column for deterministic ordering
-			return `${sort_by} ${this.sort_order}, ${table_name}.name ${this.sort_order}`;
+			return `${sort_by} ${this.sort_order}, ${table_name}.\`name\` ${this.sort_order}`;
 		} else {
 			return `${sort_by} ${this.sort_order}`;
 		}

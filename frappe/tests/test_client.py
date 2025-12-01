@@ -155,6 +155,43 @@ class TestClient(IntegrationTestCase):
 		self.assertEqual(get("ToDo", filters={}), get("ToDo", filters="{}"))
 		todo.delete()
 
+	def test_client_validatate_link(self):
+		from frappe.client import validate_link
+
+		# Basic test
+		self.assertTrue(validate_link("User", "Guest"))
+
+		# fixes capitalization
+		if frappe.db.db_type == "mariadb":
+			self.assertEqual(validate_link("User", "GueSt"), {"name": "Guest"})
+
+		# Fetch
+		self.assertEqual(validate_link("User", "Guest", fields=["enabled"]), {"name": "Guest", "enabled": 1})
+
+		# Permissions
+		with self.set_user("Guest"), self.assertRaises(frappe.PermissionError):
+			self.assertEqual(
+				validate_link("User", "Guest", fields=["enabled"]), {"name": "Guest", "enabled": 1}
+			)
+
+	def test_validate_link_child_table(self):
+		"""
+		Test validate_link works for child table doctypes with field fetch.
+		"""
+		from frappe.client import validate_link
+
+		self.addCleanup(frappe.db.rollback)
+
+		user = frappe.get_doc("User", "Administrator")
+		user.append("block_modules", {"module": "Setup"})
+		user.save()
+
+		child_row = user.block_modules[-1]
+
+		result = validate_link("Block Module", child_row.name, fields=["module"])
+		self.assertEqual(result.get("name"), child_row.name)
+		self.assertEqual(result.get("module"), "Setup")
+
 	def test_client_insert(self):
 		from frappe.client import insert
 

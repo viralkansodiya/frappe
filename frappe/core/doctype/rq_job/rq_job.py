@@ -89,7 +89,7 @@ class RQJob(Document):
 	def get_matching_job_ids(filters) -> list[str]:
 		filters = make_filter_dict(filters or [])
 
-		queues = _eval_filters(filters.get("queue"), QUEUES)
+		queues = _eval_filters(filters.get("queue"), QUEUES + get_custom_queues())
 		statuses = _eval_filters(filters.get("status"), JOB_STATUSES)
 
 		matched_job_ids = []
@@ -111,6 +111,16 @@ class RQJob(Document):
 			send_stop_job_command(connection=get_redis_conn(), job_id=self.job_id)
 		except InvalidJobOperation:
 			frappe.msgprint(_("Job is not running."), title=_("Invalid Operation"))
+
+	@check_permissions
+	def cancel(self):
+		if self.status == "queued":
+			self.job.cancel()
+		else:
+			frappe.msgprint(
+				_("Job is in {0} state and can't be cancelled").format(self.status),
+				title=_("Invalid Operation"),
+			)
 
 	@staticmethod
 	def get_count(filters=None) -> int:
@@ -199,7 +209,10 @@ def fetch_job_ids(queue: Queue, status: str) -> list[str]:
 
 	registry = registry_map.get(status)
 	if registry is not None:
-		job_ids = registry.get_job_ids()
+		if isinstance(registry, Queue):
+			job_ids = registry.get_job_ids()
+		else:
+			job_ids = registry.get_job_ids(cleanup=False)
 		return [j for j in job_ids if j]
 
 	return []
@@ -210,7 +223,7 @@ def remove_failed_jobs():
 	frappe.only_for("System Manager")
 	for queue in get_queues():
 		fail_registry = queue.failed_job_registry
-		failed_jobs = filter_current_site_jobs(fail_registry.get_job_ids())
+		failed_jobs = filter_current_site_jobs(fail_registry.get_job_ids(cleanup=False))
 
 		# Delete in batches to avoid loading too many things in memory
 		conn = get_redis_conn()
@@ -230,3 +243,9 @@ def get_all_queued_jobs():
 @frappe.whitelist()
 def stop_job(job_id):
 	frappe.get_doc("RQ Job", job_id).stop_job()
+
+
+@frappe.whitelist()
+def get_custom_queues():
+	frappe.has_permission("RQ Job", throw=True)
+	return list((frappe.conf.workers or {}).keys())

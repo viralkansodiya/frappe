@@ -86,7 +86,7 @@ class Workspace:
 
 	def get_cached(self, cache_key, fallback_fn):
 		value = frappe.cache.get_value(cache_key, user=frappe.session.user)
-		if value:
+		if value is not None:
 			return value
 
 		value = fallback_fn()
@@ -565,6 +565,7 @@ def get_custom_report_list(module):
 			else 0,
 			"label": _(r.name),
 			"link_to": r.name,
+			"report_ref_doctype": r.ref_doctype,
 		}
 		for r in reports
 	]
@@ -706,3 +707,8 @@ def update_onboarding_step(name, field, value):
 	frappe.db.set_value("Onboarding Step", name, field, value)
 
 	capture(frappe.scrub(name), app="frappe_onboarding", properties={field: value})
+
+
+@frappe.whitelist()
+def get_installed_apps():
+	return frappe.get_installed_apps()

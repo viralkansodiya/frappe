@@ -20,7 +20,7 @@ def get_things_todo(as_list=False):
 	"""Return a count of incomplete ToDos."""
 	data = frappe.get_list(
 		"ToDo",
-		fields=["name", "description"] if as_list else "count(*)",
+		fields=["name", "description"] if as_list else [{"COUNT": "*"}],
 		filters=[["ToDo", "status", "=", "Open"]],
 		or_filters=[
 			["ToDo", "allocated_to", "=", frappe.session.user],
@@ -37,8 +37,8 @@ def get_things_todo(as_list=False):
 def get_todays_events(as_list: bool = False):
 	"""Return a count of today's events in calendar."""
 	from frappe.desk.doctype.event.event import get_events
-	from frappe.utils import nowdate
+	from frappe.utils import getdate
 
-	today = nowdate()
+	today = getdate()
 	events = get_events(today, today)
 	return events if as_list else len(events)

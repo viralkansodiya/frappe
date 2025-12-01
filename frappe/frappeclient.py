@@ -107,12 +107,23 @@ class FrappeClient:
 			headers=self.headers,
 		)
 
-	def get_list(self, doctype, fields='["name"]', filters=None, limit_start=0, limit_page_length=None):
+	def get_list(
+		self,
+		doctype: str,
+		fields='["name"]',
+		filters=None,
+		limit_start: int = 0,
+		limit_page_length: int | None = None,
+		order_by=None,
+		group_by=None,
+	):
 		"""Return list of records of a particular type."""
 		if not isinstance(fields, str):
 			fields = json.dumps(fields)
 		params = {
 			"fields": fields,
+			"order_by": order_by,
+			"group_by": group_by,
 		}
 		if filters:
 			params["filters"] = json.dumps(filters)
@@ -369,12 +380,19 @@ class FrappeClient:
 			print(response.text)
 			raise
 
-		if rjson and ("exc" in rjson) and rjson["exc"]:
+		if rjson and (rjson.get("exc") or rjson.get("exc_type") or rjson.get("errors")):
 			try:
-				exc = json.loads(rjson["exc"])[0]
-				exc = "FrappeClient Request Failed\n\n" + exc
+				exception = ""
+				if rjson.get("exc"):
+					exception = json.loads(rjson["exc"])[0]
+				elif rjson.get("exc_type"):  # Just have type available
+					exception = json.loads(rjson["exc_type"])[0]
+				elif errors := rjson.get("errrors"):
+					exception = errors[0].get("exception") or errors[0].get("type")
+
+				exc = "FrappeClient Request Failed\n\n" + exception
 			except Exception:
-				exc = rjson["exc"]
+				exc = rjson.get("exc")
 
 			raise FrappeException(exc)
 		if "message" in rjson:

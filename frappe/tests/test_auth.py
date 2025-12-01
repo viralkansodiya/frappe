@@ -49,10 +49,12 @@ class TestAuth(IntegrationTestCase):
 
 	@classmethod
 	def tearDownClass(cls):
+		frappe.db.rollback()
 		frappe.delete_doc("User", cls.test_user_email, force=True)
 		frappe.local.request_ip = None
 		frappe.form_dict.email = None
 		frappe.local.response["http_status_code"] = None
+		frappe.db.commit()
 
 	def set_system_settings(self, k, v):
 		frappe.db.set_single_value("System Settings", k, v)
@@ -163,7 +165,7 @@ class TestAuth(IntegrationTestCase):
 		client = FrappeClient(self.HOST_NAME, self.test_user_email, self.test_user_password)
 
 		expiry_time = next(x for x in client.session.cookies if x.name == "sid").expires
-		current_time = datetime.datetime.now(tz=datetime.UTC).timestamp()
+		current_time = datetime.datetime.now(tz=datetime.timezone.utc).timestamp()
 		self.assertAlmostEqual(get_expiry_in_seconds(), expiry_time - current_time, delta=60 * 60)
 
 
@@ -174,8 +176,10 @@ class TestAllowedReferrer(UnitTestCase):
 			env = builder.get_environ()
 			return Request(env)
 
-		# Test with valid referrer
+		# Set a single allowed referrer
 		frappe.cache.set_value("allowed_referrers", ["https://example.com"])
+
+		# Test with valid referrer
 		frappe.local.request = create_request({"Referer": "https://example.com/some/path"})
 		http_request = frappe.auth.HTTPRequest()
 		self.assertTrue(http_request.is_allowed_referrer())
@@ -194,6 +198,16 @@ class TestAllowedReferrer(UnitTestCase):
 		frappe.local.request = create_request({"Origin": "https://malicious.com"})
 		http_request = frappe.auth.HTTPRequest()
 		self.assertFalse(http_request.is_allowed_referrer())
+
+		# Test subdomain bypass prevention
+		frappe.local.request = create_request({"Referer": "https://example.com.evil.com"})
+		http_request = frappe.auth.HTTPRequest()
+		self.assertFalse(http_request.is_allowed_referrer())
+
+		# Test exact domain match for referrer
+		frappe.local.request = create_request({"Referer": "https://example.com"})
+		http_request = frappe.auth.HTTPRequest()
+		self.assertTrue(http_request.is_allowed_referrer())
 
 		# Clean up
 		frappe.cache.delete_value("allowed_referrers")
@@ -239,7 +253,7 @@ class TestLoginAttemptTracker(IntegrationTestCase):
 		self.assertTrue(tracker.is_user_allowed())
 
 
-class TestSessionExpirty(FrappeAPITestCase):
+class TestSessionExpiry(FrappeAPITestCase):
 	def test_session_expires(self):
 		sid = self.sid  # triggers login for test case login
 		s: Session = frappe.local.session_obj

@@ -1,19 +1,20 @@
 # Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
 # License: MIT. See LICENSE
+import json
 import pickle
 import re
 import threading
 import time
-import typing
 from collections import namedtuple
 from contextlib import suppress
 
 import redis
+import redis.exceptions
 from redis.commands.search import Search
+from redis.exceptions import ResponseError
 
 import frappe
 from frappe.utils import cstr
-from frappe.utils.data import cint
 
 # 5 is faster than default which is 4.
 # Python uses old protocol for backward compatibility, we don't support anything <3.10.
@@ -51,13 +52,14 @@ class RedisWrapper(redis.Redis):
 	def make_key(self, key, user=None, shared=False):
 		if shared:
 			return key
+
 		if user:
 			if user is True:
-				user = frappe.session.user
+				user = frappe.local.session.get("user")
 
 			key = f"user:{user}:{key}"
 
-		return f"{frappe.conf.db_name}|{key}".encode()
+		return f"{frappe.local.conf.get('db_name')}|{key}".encode()
 
 	def set_value(self, key, val, user=None, expires_in_sec=None, shared=False):
 		"""Sets cache value.
@@ -102,12 +104,19 @@ class RedisWrapper(redis.Redis):
 			if not expires:
 				if val is None and generator:
 					val = generator()
-					self.set_value(original_key, val, user=user)
+					self.set_value(original_key, val, user=user, shared=shared)
 
 				else:
 					local_cache[key] = val
 
 		return val
+
+	def expire_key(self, key, time, *, user=None, shared=False):
+		key = self.make_key(key, user, shared)
+		try:
+			return self.expire(key, time)
+		except redis.exceptions.ConnectionError:
+			pass
 
 	def get_all(self, key):
 		ret = {}
@@ -405,8 +414,17 @@ class _TrackedConnection(redis.Connection):
 		self.register_connect_callback(self._enable_client_tracking)
 
 	def _enable_client_tracking(self, conn):
-		conn.send_command("CLIENT", "TRACKING", "ON", "redirect", self._invalidator_id, "NOLOOP")
-		conn.read_response()
+		try:
+			conn.send_command("CLIENT", "TRACKING", "ON", "redirect", self._invalidator_id, "NOLOOP")
+			conn.read_response()
+		except ResponseError as e:
+			if "client ID" in str(e) and "does not exist" in str(e):
+				# Redis restarted, there's no easy way to recover from this.
+				frappe.client_cache.healthy = False
+			elif "unknown subcommand" in str(e).lower():
+				raise Exception("Redis version is not supported, upgrade to Redis 6.0 or higher.")
+			else:
+				raise
 
 
 CachedValue = namedtuple("CachedValue", ["value", "expiry"])
@@ -482,14 +500,14 @@ class ClientCache:
 		)
 		self.invalidator_thread = self.run_invalidator_thread()
 
-	def get_value(self, key):
+	def get_value(self, key, *, shared=False, generator=None):
 		if not self.healthy:
-			return self.redis.get_value(key)
+			return self.redis.get_value(key, shared=shared, generator=generator)
 
-		key = self.redis.make_key(key)
+		key = self.redis.make_key(key, shared=shared)
 		try:
 			val = self.cache[key]
-			if time.monotonic() < val.expiry and self.healthy:
+			if time.monotonic() < val.expiry:
 				self.hits += 1
 				return val.value
 		except KeyError:
@@ -507,7 +525,12 @@ class ClientCache:
 		# This cache is long lived and "misses" are not tracked by redis so they'll never get
 		# invalidated.
 		if val is None:
-			return None
+			if generator:
+				val = generator()
+				self.set_value(key, val, shared=True)
+				return val
+			else:
+				return None
 
 		self.ensure_max_size()
 		with self.lock:
@@ -518,8 +541,8 @@ class ClientCache:
 
 		return val
 
-	def set_value(self, key, val):
-		key = self.redis.make_key(key)
+	def set_value(self, key, val, *, shared=False):
+		key = self.redis.make_key(key, shared=shared)
 		self.ensure_max_size()
 		self.redis.set_value(key, val, shared=True)
 		with self.lock:
@@ -531,13 +554,24 @@ class ClientCache:
 		#   doesn't send invalidation.
 		_ = self.redis.get_value(key, shared=True, use_local_cache=not self.healthy)
 
+	def get_doc(self, doctype: str, name: str | None = None):
+		"""Utility to fetch and store documents in client cache.
+
+		Use sparingly, this should ideally be used for settings and doctypes that have few known
+		number of documents.
+		"""
+		if not name:
+			name = doctype  # singles
+		key = frappe.get_document_cache_key(doctype, name)
+		return self.get_value(key, generator=lambda: frappe.get_doc(doctype, name))
+
 	def ensure_max_size(self):
 		if len(self.cache) >= self.maxsize:
 			with self.lock, suppress(RuntimeError):
 				self.cache.pop(next(iter(self.cache)), None)
 
-	def delete_value(self, key):
-		key = self.redis.make_key(key)
+	def delete_value(self, key, *, shared=False):
+		key = self.redis.make_key(key, shared=shared)
 		self.redis.delete_value(key, shared=True)
 		with self.lock:
 			self.cache.pop(key, None)
@@ -551,12 +585,32 @@ class ClientCache:
 
 	def run_invalidator_thread(self):
 		self._watcher = self.invalidator.pubsub()
-		self._watcher.subscribe(**{"__redis__:invalidate": self._handle_invalidation})
+		self._watcher.subscribe(
+			**{
+				"__redis__:invalidate": self._handle_invalidation,
+				"clear_persistent_cache": self._handle_persistent_cache_invalidation,
+			}
+		)
 		return self._watcher.run_in_thread(
-			sleep_time=None,
+			sleep_time=60,
 			daemon=True,
 			exception_handler=self._exception_handler,
 		)
+
+	def erase_persistent_caches(self, *, doctype=None):
+		"""Send signal to clear all worker-specific caches
+
+		This can include cached controller resolution, @site_cache and any other similar persistent
+		cache.
+		"""
+		try:
+			self.redis.publish(
+				"clear_persistent_cache",
+				json.dumps({"doctype": doctype, "site": frappe.local.site}),
+			)
+		except redis.exceptions.ConnectionError:
+			# Assume bench isn't running
+			pass
 
 	def _handle_invalidation(self, message):
 		if message["data"] is None:
@@ -566,6 +620,19 @@ class ClientCache:
 		with self.lock:
 			for key in message["data"]:
 				self.cache.pop(key, None)
+
+	def _handle_persistent_cache_invalidation(self, message):
+		import frappe.utils.caching
+		from frappe.cache_manager import clear_controller_cache
+
+		if message["type"] != "message":
+			return
+
+		payload = frappe._dict(json.loads(message["data"]))
+		clear_controller_cache(payload.doctype, site=payload.site)
+
+		if not payload.doctype:
+			frappe.utils.caching._SITE_CACHE.clear()
 
 	def _exception_handler(self, exc, pubsub, pubsub_thread):
 		if isinstance(exc, (redis.exceptions.ConnectionError)):

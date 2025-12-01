@@ -59,6 +59,8 @@ def log_error(title=None, message=None, reference_doctype=None, reference_name=N
 		return
 
 	trace_id = get_trace_id()
+	metadata = get_error_metadata()
+
 	error_log = frappe.get_doc(
 		doctype="Error Log",
 		error=traceback,
@@ -66,6 +68,7 @@ def log_error(title=None, message=None, reference_doctype=None, reference_name=N
 		reference_doctype=reference_doctype,
 		reference_name=reference_name,
 		trace_id=trace_id,
+		metadata=metadata,
 	)
 
 	# Capture exception data if telemetry is enabled
@@ -75,6 +78,40 @@ def log_error(title=None, message=None, reference_doctype=None, reference_name=N
 		error_log.deferred_insert()
 	else:
 		return error_log.insert(ignore_permissions=True)
+
+
+def get_error_metadata() -> str:
+	"""
+	Returns request/job metadata to store in Error Log for easier debugging
+	"""
+	import rq
+
+	from frappe.utils.logger import sanitized_dict
+
+	metadata = {}
+
+	try:
+		if job := rq.get_current_job():
+			metadata["type"] = "background_job"
+			metadata["job_id"] = job.id
+			metadata["job_name"] = frappe.cstr(job.kwargs.get("method"))
+			metadata["queue"] = job.origin
+			metadata["kwargs"] = sanitized_dict(job.kwargs)
+
+			if "run_scheduled_job" in metadata["job_name"]:
+				metadata["scheduled"] = True
+				metadata["job_type"] = job.kwargs.get("kwargs", {}).get("job_type", "")
+
+		else:
+			metadata["type"] = "http_request"
+			for key in ("method", "path", "referrer"):
+				metadata[key] = getattr(frappe.local.request, key)
+			metadata["form_dict"] = sanitized_dict(frappe.form_dict)
+
+		metadata["user"] = getattr(frappe.session, "user", "Unidentified")
+	finally:
+		# We don't want to bother with exception handling *while* gathering some error's metadata
+		return frappe.as_json(metadata)  # noqa: B012
 
 
 def log_error_snapshot(exception: Exception):
@@ -100,8 +137,6 @@ def get_default_args(func):
 def raise_error_on_no_output(error_message, error_type=None, keep_quiet=None):
 	"""Decorate any function to throw error incase of missing output.
 
-	TODO: Remove keep_quiet flag after testing and fixing sendmail flow.
-
 	:param error_message: error message to raise
 	:param error_type: type of error to raise
 	:param keep_quiet: control error raising with external factor.
@@ -109,11 +144,22 @@ def raise_error_on_no_output(error_message, error_type=None, keep_quiet=None):
 	:type error_type: Exception Class
 	:type keep_quiet: function
 
-	>>> @raise_error_on_no_output("Ingradients missing")
-	... def get_indradients(_raise_error=1):
-	...     return
-	>>> get_ingradients()
-	`Exception Name`: Ingradients missing
+	---
+	Example:
+
+	```py
+	@raise_error_on_no_output("Ingredients are missing")
+	def get_ingredients(_raise_error=1):
+	    return
+
+
+	# this will raise an Exception with message "Ingredients are missing"
+	ingredients = get_ingredients()
+	```
+
+	---
+
+	TODO: Remove keep_quiet flag after testing and fixing sendmail flow.
 	"""
 
 	def decorator_raise_error_on_no_output(func):

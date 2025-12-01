@@ -14,13 +14,14 @@ import pdfkit
 pdfkit.source.unicode = str  # NOTE: upstream bug; PYTHONOPTIMIZE=1 optimized this away
 from bs4 import BeautifulSoup
 from packaging.version import Version
-from pypdf import PdfReader, PdfWriter
+from pypdf import PdfReader, PdfWriter, errors
 
 import frappe
 from frappe import _
 from frappe.core.doctype.file.utils import find_file_by_url
 from frappe.utils import cstr, scrub_urls
 from frappe.utils.caching import redis_cache
+from frappe.utils.data import get_url
 from frappe.utils.jinja_globals import bundled_asset, is_rtl
 
 cssutils.log.setLog(frappe.logger("cssutils"))
@@ -33,9 +34,11 @@ PDF_CONTENT_ERRORS = [
 ]
 
 
-def pdf_header_html(soup, head, content, styles, html_id, css):
+def pdf_header_html(soup, head, content, styles, html_id, css, path=None):
+	if not path:
+		path = "templates/print_formats/pdf_header_footer.html"
 	return frappe.render_template(
-		"templates/print_formats/pdf_header_footer.html",
+		path,
 		{
 			"head": head,
 			"content": content,
@@ -75,8 +78,10 @@ def _guess_template_error_line_number(template) -> int | None:
 				return frame.lineno
 
 
-def pdf_footer_html(soup, head, content, styles, html_id, css):
-	return pdf_header_html(soup=soup, head=head, content=content, styles=styles, html_id=html_id, css=css)
+def pdf_footer_html(soup, head, content, styles, html_id, css, path=None):
+	return pdf_header_html(
+		soup=soup, head=head, content=content, styles=styles, html_id=html_id, css=css, path=path
+	)
 
 
 def get_pdf(html, options=None, output: PdfWriter | None = None):
@@ -125,6 +130,37 @@ def get_pdf(html, options=None, output: PdfWriter | None = None):
 	filedata = get_file_data_from_writer(writer)
 
 	return filedata
+
+
+def measure_time(func):
+	import time
+
+	def wrapper(*args, **kwargs):
+		start_time = time.time()
+		result = func(*args, **kwargs)
+		end_time = time.time()
+		print(f"Function {func.__name__} took {end_time - start_time:.4f} seconds")
+		return result
+
+	return wrapper
+
+
+@measure_time
+def get_chrome_pdf(print_format, html, options, output, pdf_generator=None):
+	from frappe.utils.pdf_generator.browser import Browser
+	from frappe.utils.pdf_generator.chrome_pdf_generator import ChromePDFGenerator
+	from frappe.utils.pdf_generator.pdf_merge import PDFTransformer
+
+	if pdf_generator != "chrome":
+		# Use the default pdf generator
+		return
+	# scrubbing url to expand url is not required as we have set url.
+	# also, planning to remove network requests anyway 🤞
+	generator = ChromePDFGenerator()
+	browser = Browser(generator, print_format, html, options)
+	transformer = PDFTransformer(browser)
+	# transforms and merges header, footer into body pdf and returns merged pdf
+	return transformer.transform_pdf(output=output)
 
 
 def get_file_data_from_writer(writer_obj):
@@ -316,7 +352,8 @@ def prepare_header_footer(soup: BeautifulSoup):
 			toggle_visible_pdf(content)
 			id_map = {"header-html": "pdf_header_html", "footer-html": "pdf_footer_html"}
 			hook_func = frappe.get_hooks(id_map.get(html_id))
-			html = frappe.get_attr(hook_func[-1])(
+			html = frappe.call(
+				hook_func[-1],
 				soup=soup,
 				head=head,
 				content=content,
@@ -379,3 +416,51 @@ def get_wkhtmltopdf_version():
 			pass
 
 	return wkhtmltopdf_version or "0"
+
+
+def pdf_contains_js(file_content: bytes):
+	"""
+	Check if a PDF file contains JavaScript.
+
+	Args:
+		file_content (bytes): The content of the PDF file.
+
+	Returns:
+		bool: True if the PDF contains JavaScript, False otherwise and also if the file is encrypted.
+	"""
+	from io import BytesIO
+
+	reader = PdfReader(BytesIO(file_content))
+
+	def has_javascript(obj):
+		if isinstance(obj, dict):
+			for key, value in obj.items():
+				if key in ("/JS", "/JavaScript"):
+					return True
+				if has_javascript(value):
+					return True
+		elif isinstance(obj, list):
+			for item in obj:
+				if has_javascript(item):
+					return True
+		return False
+
+	root = reader.trailer.get("/Root", {})
+	if has_javascript(root):
+		return True
+
+	try:
+		for page in reader.pages:
+			if has_javascript(page):
+				return True
+	except errors.FileNotDecryptedError:
+		pass
+
+	return False
+
+
+def get_host_url():
+	if frappe.request:
+		return frappe.request.host_url
+	else:
+		return get_url() + "/"
